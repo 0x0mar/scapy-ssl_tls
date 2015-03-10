@@ -2,8 +2,8 @@
 # -*- coding: UTF-8 -*-
 # Author : tintinweb@oststrom.com <github.com/tintinweb>
 
-def sendrcv(sock, p, bufflen=1024):
-    sock.settimeout(5)
+def sendrcv(sock, p, bufflen=8*1024):
+    sock.settimeout(2)
     print "sending TLS payload"
     sock.sendall(p)
     resp=''
@@ -130,6 +130,11 @@ UM6j0ZuSMFOCr/lGPAoOQU0fskidGEHi1/kW+suSr28TqsyYZpwBDQ==
     r = sendrcv(s,str(p))
     #SSL(r).show()
     print "* FIXME: implement TLSFinished ..."
+    p = TLSRecord()/TLSHandshake()/TLSFinished(data=session.calculate_finished())
+    p.show()
+    p = session.tlsciphertext_encrypt(p,cryptfunc=session.crypto.client.enc,macsecret=session.crypto.session.key.client.mac)
+    p.show()
+    r = sendrcv(s,str(p))
     print "* SSL Session parameter and keys: "
     print repr(session)
     print "* you should now be able to encrypt/decrypt any client/server communication for this session :)"
