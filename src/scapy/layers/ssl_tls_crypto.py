@@ -15,7 +15,8 @@ from scapy.layers.inet import TCP, UDP, IP
 from ssl_tls import TLSHandshake,TLSServerHello,TLSClientHello,TLSCertificateList, \
                     TLSClientKeyExchange,TLSKexParamEncryptedPremasterSecret, \
                     TLS_CIPHER_SUITES, TLSRecord, TLSCiphertextDecrypted, \
-                    TLSCiphertextMAC
+                    TLSCiphertextMAC, TLSHelloRequest, TLSFinished, TLSCiphertext, \
+                    SSL
 import struct
 import pkcs7
 import array
@@ -52,7 +53,7 @@ def x509_extract_pubkey_from_der(der_certificate):
             subjectPublicKeyInfo=seq
         
     if not subjectPublicKeyInfo:
-        raise ValueError("could not find OID rsaEncryption 1.2.840.113549.1.1.1 in certificate")
+        raise ValueError("could not find OID rsaEncryption 1.2.840.113549.1.1.1 in certificate response")
 
     # Initialize RSA key
     return RSA.importKey(subjectPublicKeyInfo)
@@ -98,8 +99,6 @@ def ciphersuite_factory(cipher_id, key, iv):
     if not "AES" in enc:
         raise Exception("Encryption Cipher not supported: %s"%enc)
     
-    
-    
     if "CBC" in enc:
         mode = AES.MODE_CBC
     else:
@@ -114,7 +113,7 @@ class TLSSessionCtx(object):
         self.packets = namedtuple('packets',['history','client','server'])
         self.packets.history=[]         #packet history
         self.packets.client = namedtuple('client',['sequence'])
-        self.packets.client.sequence=0
+        self.packets.client.sequence=0                                  #https://tools.ietf.org/html/rfc4346 inc. for each record, initial value=0
         self.packets.server = namedtuple('server',['sequence'])
         self.packets.server.sequence=0
         
@@ -134,6 +133,7 @@ class TLSSessionCtx(object):
         self.params.negotiated.encryption=None
         self.params.negotiated.mac=None
         self.params.negotiated.compression=None
+        
         self.crypto = namedtuple('crypto', ['client','server'])
         self.crypto.client = namedtuple('client', ['enc','dec'])
         self.crypto.client.enc = None
@@ -169,6 +169,8 @@ class TLSSessionCtx(object):
         self.crypto.session.key.length.mac = None
         self.crypto.session.key.length.encryption = None
         self.crypto.session.key.length.iv = None
+        
+        self.crypto.session.prf = TLSPRF(Crypto.Hash.SHA256)
 
         
         
@@ -306,6 +308,7 @@ class TLSSessionCtx(object):
                 # decrypt epms -> pms
                 self.crypto.session.premaster_secret = self.crypto.server.rsa.privkey.decrypt(self.crypto.session.encrypted_premaster_secret,None)
                 secparams = TLSSecurityParameters()
+                # secparams.prf = tls_prf
                 
                 secparams.mac_key_length=self.crypto.session.key.length.mac
                 secparams.enc_key_length=self.crypto.session.key.length.encryption
@@ -344,6 +347,32 @@ class TLSSessionCtx(object):
                                                              iv=self.crypto.session.key.server.iv)
                 
             # check whether crypto was set up
+    def calculate_finished(self):
+        # https://tools.ietf.org/html/rfc4346 tls1.1
+        #https://www.ietf.org/rfc/rfc2246.txt tls1.0
+        # get all handshake pakets in order, skip Finished and TLSHelloRequest acc to rfc4346
+        if self.packets.history[0].haslayer(TLSClientHello):
+            label=TLSPRF.TLS_MD_CLIENT_FINISH_CONST
+        elif self.packets.history[0].haslayer(TLSServerHello):
+            label=TLSPRF.TLS_MD_SERVER_FINISH_CONST
+        else:
+            raise ValueError("calculate_finished - first packet in TLSContext must be Client/Server-Hello")
+        
+        verify_data=''.join((str(p[TLSHandshake]) for p in self.packets.history \
+                             if p.haslayer(TLSHandshake) \
+                             and not any(x for x in (TLSHelloRequest,TLSFinished))))
+        # tls 1.0
+        #   verify_data
+        #   PRF(master_secret, finished_label, MD5(handshake_messages) +
+        #   SHA-1(handshake_messages)) [0..11];
+        
+        verify_data = self.crypto.session.prf.prf_numbytes(
+                                    self.crypto.session.master_secret,
+                                    label, 
+                                    MD5.new(verify_data).digest()+SHA.new(verify_data).digest(), 
+                                    numbytes=12)
+        
+        return verify_data
             
     def rsa_load_key(self, pem):
         key=RSA.importKey(pem)
@@ -356,19 +385,73 @@ class TLSSessionCtx(object):
         self.crypto.server.rsa.privkey=self.rsa_load_key(pem)
         return
     
-    def tlsciphertext_decrypt(self, p, cryptfunc):
-        ret = TLSRecord()
+    def tlsciphertext_decrypt(self, p, cryptfunc, macsecret=None):
+        ret = TLSRecord(str(TLSRecord()))
         ret.content_type, ret.version, ret.length = p[TLSRecord].content_type, p[TLSRecord].version, p[TLSRecord].length
-        enc_data = p[TLSRecord].payload.load 
+        enc_data = str(p[TLSRecord].payload)
+        #enc_data = p[TLSRecord].payload.load 
         
         #if self.packets.client.sequence==0:
         #    iv = self.crypto.session.key.client.iv
         decrypted = cryptfunc.decrypt(enc_data)
         
-        plaintext = decrypted[:-self.crypto.session.key.length.mac-1]
-        mac=decrypted[len(plaintext):]
+        plaintext = decrypted[:-self.crypto.session.key.length.mac]
+        mac=decrypted[-self.crypto.session.key.length.mac:]
+        
+        # quickly verify mac
+        if macsecret:
+            seq=seq = struct.pack("!II",0,0)
+            mac_a = self.tlsciphertext_mac(key=macsecret, data=seq+plaintext)
+            if mac_a==mac:
+                print "* MAC OK!"
         
         return ret/TLSCiphertextDecrypted(plaintext)/TLSCiphertextMAC(mac)
+    
+    def tlsciphertext_mac(self, key, data):
+        #https://www.ietf.org/rfc/rfc2246.txt 6.2.3.1
+        '''
+        The MAC is generated as:
+
+           HMAC_hash(MAC_write_secret, seq_num + TLSCompressed.type +
+                         TLSCompressed.version + TLSCompressed.length +
+                         TLSCompressed.fragment));
+        '''
+        return HMAC.new(key=key, 
+                 msg=data, 
+                 digestmod=SHA).digest()
+    
+    def tlsciphertext_encrypt(self, p, cryptfunc, macsecret=None):
+        p = TLSRecord(str(p))           # re-serialize
+        ret = TLSRecord()
+        # take type,version from tlsplaintext
+        ret.content_type, ret.version = p[TLSRecord].content_type, p[TLSRecord].version
+        
+        plaintext = str(p[TLSRecord])
+        # calc MAC
+        # MAC then ENCRYPT
+        seq = struct.pack("!II",0,0) # cli_hs,clientkeyexch,ccs
+        mac=''
+        if macsecret:
+            mac = self.tlsciphertext_mac(key=macsecret,
+                                         data=seq+plaintext)
+
+        print "---------------------------"
+        # encrypt
+
+        
+        print "len-plaintext:",len(plaintext), repr(plaintext)
+        print "MAC",repr(mac)
+        
+        ciphertext = cryptfunc.encrypt(plaintext+mac)
+        
+        #ciphertext+=ciphertext[-1]
+        #pad = struct.pack("!B",padlen)*padlen
+        pcrypt=ret/TLSCiphertext(ciphertext)
+        
+        #print repr(self.tlsciphertext_decrypt(pcrypt,self.crypto.client.dec,macsecret=macsecret))
+        
+        print "---------------------------"
+        return pcrypt
             
 
 class TLSPRF(object):

@@ -276,9 +276,7 @@ class TLSRecord(Packet):
     
 class TLSCiphertext(Packet):
     name = "TLS Ciphertext Fragment"
-    fields_desc = [ByteEnumField("content_type", 0xff, TLS_CONTENT_TYPES),
-                   XShortEnumField("version", 0x0301, TLS_VERSIONS),
-                   XLenField("length", None, fmt="!H"), ]
+    fields_desc = [StrField("data", '', fmt="H") ]
 
 class TLSCiphertextDecrypted(Packet):
     name = "TLS Ciphertext Decrypted"
@@ -401,6 +399,10 @@ class TLSExtHeartbeat(Packet):
     def extract_padding(self, s):
         return '', s
     
+class TLSHelloRequest(Packet):
+    name = "TLS Hello Request"
+    fields_desc = []
+                   
 class TLSClientHello(Packet):
     name = "TLS Client Hello"
     fields_desc = [XShortEnumField("version", 0x0301, TLS_VERSIONS),
@@ -470,17 +472,9 @@ class TLSKexParamDH(Packet):
                     StrLenField("data", None) ]
 
 class TLSFinished(Packet):
-    name = "TLS Handshake Finished"
+    name = "TLS Finished"
     fields_desc = [  # FieldLenField("length",None,length_of="data",fmt="H"),
                     StrLenField("data", None) ]
-    
-    def xbuild(self, master_secret, finished_label, hash_handshake_messages):
-        '''
-        master_secret
-        finished_label = ['client finished','server finished']
-        hash_handshake_messages 
-        '''
-        self.data = ssl_tls_crypto.prf(master_secret, finished_label, hash_handshake_messages)
 
 class TLSDHServerParams(Packet):
     name = "TLS Diffie-Hellman Server Params"
@@ -768,6 +762,7 @@ bind_layers(TLSRecord, TLSAlert, {'content_type':0x15})
 
 bind_layers(TLSRecord, TLSHandshake, {'content_type':0x16})
 # --> handshake proto
+bind_layers(TLSHandshake, TLSHelloRequest, {'type':0x00})
 bind_layers(TLSHandshake, TLSClientHello, {'type':0x01})
 bind_layers(TLSHandshake, TLSServerHello, {'type':0x02})
 bind_layers(TLSHandshake, TLSCertificateList, {'type':0x0b})
