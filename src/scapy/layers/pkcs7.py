@@ -57,3 +57,21 @@ class PKCS7Encoder(object):
          for _ in xrange(val):
              output.write('%02x' % val)
          return text + binascii.unhexlify(output.getvalue())
+    
+    ## @param text The text to encode.
+     def encode_tls10(self, text):
+         '''
+         Pad an input string according to PKCS#7
+         '''
+         k = self.k -1          # mod k-1 due to padlen byte
+         l = len(text)
+         output = StringIO.StringIO()
+         val = k - (l % self.k) 
+         for _ in xrange(val+1):
+             output.write('%02x' % val)
+         return text + binascii.unhexlify(output.getvalue())
+     
+     
+if __name__=="__main__":
+    p=PKCS7Encoder()
+    print '4444440a9f51e3f0a916224bf220379fc032f373a0abec7f0707070707070707'==p.encode_tls10("44 44 44 0a 9f 51 e3 f0 a9 16 22 4b f2 20 37 9f c0 32 f3 73 a0 ab ec 7f".replace(" ","").decode("hex")).encode("hex")
