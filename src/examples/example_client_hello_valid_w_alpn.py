@@ -13,7 +13,7 @@ if __name__=="__main__":
     #------>
     
     
-    target = ('192.168.220.131',4433)            # MAKE SURE TO CHANGE THIS
+    target = ('www.remote.host',443)            # MAKE SURE TO CHANGE THIS
     
     # create tcp socket
     s = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
@@ -24,12 +24,13 @@ if __name__=="__main__":
         TLSHandshake()/ \
         TLSClientHello(compression_methods=range(0xff), 
                        cipher_suites=range(0xff), 
-                       extensions=[TLSExtension()/ \
+                       extensions=[
+                                   TLSExtension()/ \
                                   TLSALPN(protocol_name_list= \
-                                                    [TLSALPNProtocol(data="http/1.1"),
-                                                     TLSALPNProtocol(data="http/1.3"),
-                                                     TLSALPNProtocol(data="\x00htt\x01%sp/1.1"),
-                                                     ])],)
+                                                    [TLSALPNProtocol(data="http/1.0"),
+            
+                                                     ])
+                                   ],)
                 
     p.show()
 
@@ -38,9 +39,65 @@ if __name__=="__main__":
     s.sendall(str(p))
     resp = s.recv(1024)
     print "received, %s"%repr(resp)
+    resp = SSL(resp)
+    resp.show()
+    s.close()
+
+
+    # experimental server code
+    '''
+    target = ('192.168.220.1',4433)            # MAKE SURE TO CHANGE THIS
+    
+    # create tcp socket
+    s = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
+    s.bind(target)
+    s.listen(1)
+    conn, addr = s.accept()
+    print 'Connected by', addr
+    while 1:
+        data = conn.recv(1024)
+        print "lol"
+        del (resp[TLSRecord].length)
+        del (resp[TLSHandshake].length)
+        del (resp[TLSServerHello].extensions_length)
+        resp[TLSServerHello].cipher_suite=0x04
+        resp[TLSServerHello].extensions.append(
+                                       TLSExtension()/ \
+                                       TLSALPN(protocol_name_list= \
+                                                        [TLSALPNProtocol(data="h"*250),
+                                                         ])
+                                       )
+        resp[TLSRecord].show()
+        conn.sendall(str(resp[TLSRecord]))
+    conn.close()
+    print "bound"
+    #s.connect(target)
+    
+    resp = s.recv(1024)
+    print "received, %s"%repr(resp)
     SSL(resp).show()
+    # create TLS Handhsake / Client Hello packet
+    p = TLSRecord()/ \
+        TLSHandshake()/ \
+        TLSServerHello(compression_method=0x00, 
+                       cipher_suite=0x00, 
+                       extensions=[
+                                   TLSExtension()/ \
+                                  TLSALPN(protocol_name_list= \
+                                                    [TLSALPNProtocol(data="http/1.0"),
+                                                     ])
+                                   ],)
+                
+    p.show()
+
+    
+    print "sending TLS payload"
+    s.sendall(str(p))
+
     
     
     s.close()
+    '''
+    
     
     
