@@ -30,7 +30,7 @@ if __name__=="__main__":
     import ssl_tls_crypto
     from Crypto.Cipher import PKCS1_v1_5
     #------>
-    target = ('192.168.220.131',4433)            # MAKE SURE TO CHANGE THIS
+    target = ('192.168.220.131',443)            # MAKE SURE TO CHANGE THIS
     
     # create tcp socket
     print "* connecting ..."
@@ -71,12 +71,13 @@ xT0ToMPJUzWAn8pZv0snA0um6SIgvkCuxO84OkANCVbttzXImIsL7pFzfcwV/ERK
 UM6j0ZuSMFOCr/lGPAoOQU0fskidGEHi1/kW+suSr28TqsyYZpwBDQ==
 -----END RSA PRIVATE KEY-----
 """
+
     session.rsa_load_privkey(privkey)
     
     # create TLS Handshake / Client Hello packet
     print "* -> client hello"
-    p = TLSRecord()/TLSHandshake()/TLSClientHello(compression_methods=None, 
-                                                  cipher_suites=[TLSCipherSuite.RSA_WITH_AES_128_CBC_SHA],
+    p = TLSRecord()/TLSHandshake()/TLSClientHello(compression_methods=[TLSCompressionMethod.NULL], 
+                                                  cipher_suites=[TLSCipherSuite.RSA_WITH_AES_128_CBC_SHA,],
                                                   random_bytes='R'*28)
           
         
@@ -126,12 +127,15 @@ UM6j0ZuSMFOCr/lGPAoOQU0fskidGEHi1/kW+suSr28TqsyYZpwBDQ==
     print "* -> ChangeCipherSpec"
     p = TLSRecord()/TLSChangeCipherSpec()
     #p.show2()
-    
+    session.insert(SSL(str(p)))
     r = sendrcv(s,str(p))
+    SSL(r).show()
     #SSL(r).show()
     print "* FIXME: implement TLSFinished ..."
+
+    
     p = TLSRecord()/TLSHandshake()/TLSFinished(data=session.calculate_finished())
-    p.show()
+    p.show2()
     p = session.tlsciphertext_encrypt(p,cryptfunc=session.crypto.client.enc,macsecret=session.crypto.session.key.client.mac)
     p.show()
     r = sendrcv(s,str(p))
