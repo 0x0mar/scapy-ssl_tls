@@ -275,8 +275,8 @@ class TLSRecord(Packet):
                    XLenField("length", None, fmt="!H"), ]
     
 class TLSCiphertext(Packet):
-    name = "TLS Ciphertext Fragment"
-    fields_desc = [StrField("data", '', fmt="H") ]
+    name = "TLS Ciphertext"
+    fields_desc = [ StrField("data", None, fmt="H")]
 
 class TLSCiphertextDecrypted(Packet):
     name = "TLS Ciphertext Decrypted"
@@ -768,7 +768,7 @@ bind_layers(TLSHandshake, TLSServerHello, {'type':0x02})
 bind_layers(TLSHandshake, TLSCertificateList, {'type':0x0b})
 bind_layers(TLSHandshake, TLSClientKeyExchange, {'type':0x10})
 bind_layers(TLSHandshake, TLSServerKeyExchange, {'type':0x0c})
-bind_layers(TLSHandshake, TLSFinished, {'type':0x20})
+bind_layers(TLSHandshake, TLSFinished, {'type':0x14})
 # <---
 bind_layers(TLSServerKeyExchange, TLSKexParamEncryptedPremasterSecret)
 bind_layers(TLSClientKeyExchange, TLSKexParamEncryptedPremasterSecret)
