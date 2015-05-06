@@ -83,14 +83,20 @@ def describe_ciphersuite(cipher_id):
 
 class PKCS7Wrapper(object):
     def __init__(self, cipher_object):
+        self.seq_encrypt=0
+        self.seq_decrypt=0
         self.cipher_object=cipher_object
         self.encoder = pkcs7.PKCS7Encoder(k=cipher_object.block_size)       # padd 16
         
     def encrypt(self, plaintext):
-        return self.cipher_object.encrypt(self.encoder.encode(plaintext))
+        ciphertext = self.cipher_object.encrypt(self.encoder.encode_tls10(plaintext))
+        self.seq_encrypt+=1
+        return ciphertext
     
     def decrypt(self, ciphertext):
-        return self.encoder.decode(self.cipher_object.decrypt(ciphertext))
+        plaintext = self.encoder.decode(self.cipher_object.decrypt(ciphertext))
+        self.seq_decrypt+=1
+        return plaintext
 
 def ciphersuite_factory(cipher_id, key, iv):
     kex, enc, mac = describe_ciphersuite(cipher_id)
@@ -240,7 +246,7 @@ class TLSSessionCtx(object):
 
         str +="\n\t crypto.session.key.client.mac=%(crypto-session-key-client-mac)s"
         str +="\n\t crypto.session.key.client.encryption=%(crypto-session-key-client-encryption)s"
-        str +="\n\t crypto.session.key.cllient.iv=%(crypto-session-key-client-iv)s"
+        str +="\n\t crypto.session.key.client.iv=%(crypto-session-key-client-iv)s"
 
         str +="\n\t crypto.session.key.server.mac=%(crypto-session-key-server-mac)s"
         str +="\n\t crypto.session.key.server.encryption=%(crypto-session-key-server-encryption)s"
@@ -258,6 +264,7 @@ class TLSSessionCtx(object):
          add packet to context
          '''
          self.packets.history.append(p)
+        
          self.process(p)        # fill structs
          
     def process(self,p):
@@ -358,20 +365,30 @@ class TLSSessionCtx(object):
         else:
             raise ValueError("calculate_finished - first packet in TLSContext must be Client/Server-Hello")
         
+        
+        verify_data=''
+        for p in self.packets.history:
+            for r in p[SSL].records:
+                if p.haslayer(TLSHandshake) and not any(x in p for x in (TLSHelloRequest,TLSFinished)):
+                    verify_data+=str(r[TLSHandshake])
+        
+        '''
         verify_data=''.join((str(p[TLSHandshake]) for p in self.packets.history \
                              if p.haslayer(TLSHandshake) \
-                             and not any(x for x in (TLSHelloRequest,TLSFinished))))
+                             and not any(x in p for x in (TLSHelloRequest,TLSFinished))))
+        '''
         # tls 1.0
         #   verify_data
         #   PRF(master_secret, finished_label, MD5(handshake_messages) +
         #   SHA-1(handshake_messages)) [0..11];
-        
+        #print "LABEL: ",label,repr(MD5.new(verify_data).digest()),"|",repr(SHA.new(verify_data).digest())
+
         verify_data = self.crypto.session.prf.prf_numbytes(
                                     self.crypto.session.master_secret,
                                     label, 
                                     MD5.new(verify_data).digest()+SHA.new(verify_data).digest(), 
                                     numbytes=12)
-        
+        #print "VERIFY_DATA",repr(verify_data)
         return verify_data
             
     def rsa_load_key(self, pem):
@@ -386,25 +403,38 @@ class TLSSessionCtx(object):
         return
     
     def tlsciphertext_decrypt(self, p, cryptfunc, macsecret=None):
-        ret = TLSRecord(str(TLSRecord()))
-        ret.content_type, ret.version, ret.length = p[TLSRecord].content_type, p[TLSRecord].version, p[TLSRecord].length
+        ret = TLSRecord()
+        ret.content_type, ret.version = p[TLSRecord].content_type, p[TLSRecord].version
         enc_data = str(p[TLSRecord].payload)
         #enc_data = p[TLSRecord].payload.load 
         
         #if self.packets.client.sequence==0:
         #    iv = self.crypto.session.key.client.iv
-        decrypted = cryptfunc.decrypt(enc_data)
+        seq = cryptfunc.seq_decrypt
+        decrypted = cryptfunc.decrypt(enc_data)         # removes pkcs7 padding, but leaves padlen byte from tlsblockcipher
+        
+        padlen = struct.unpack("!B",decrypted[-1])[0]           
+        decrypted = decrypted[:-1]                      #remove padlen, we dont hash it
         
         plaintext = decrypted[:-self.crypto.session.key.length.mac]
         mac=decrypted[-self.crypto.session.key.length.mac:]
         
+        #print "DEC plaintext",len(plaintext),repr(plaintext)
+        #print "DEC MAC",len(mac),repr(mac)
+        
+        ret.length = len(plaintext)                     #TODO:FIXM
         # quickly verify mac
         if macsecret:
-            seq=seq = struct.pack("!II",0,0)
-            mac_a = self.tlsciphertext_mac(key=macsecret, data=seq+plaintext)
+            # TODO DIRTY: sequence number is tracked in cryptfunc object
+            #print "SEQ",repr(seq)
+            seq = struct.pack("!II",0,seq)
+            mac_a = self.tlsciphertext_mac(key=macsecret, data=seq+str(ret/TLSCiphertextDecrypted(plaintext)))
             if mac_a==mac:
                 print "* MAC OK!"
+            else:
+                print "* MAC FAILED! - (pkt!=verify)(%s!=%s)"%(repr(mac),repr(mac_a))
         
+        self.packets.server.sequence +=1
         return ret/TLSCiphertextDecrypted(plaintext)/TLSCiphertextMAC(mac)
     
     def tlsciphertext_mac(self, key, data):
@@ -416,41 +446,54 @@ class TLSSessionCtx(object):
                          TLSCompressed.version + TLSCompressed.length +
                          TLSCompressed.fragment));
         '''
+        #print key.encode("hex")
+        #print data.encode("hex")
         return HMAC.new(key=key, 
                  msg=data, 
                  digestmod=SHA).digest()
     
     def tlsciphertext_encrypt(self, p, cryptfunc, macsecret=None):
-        p = TLSRecord(str(p))           # re-serialize
+        p = p[TLSRecord]
+        #p = TLSRecord(str(p[TLSRecord]))           # re-serialize
         ret = TLSRecord()
+        
+        p.show()
         # take type,version from tlsplaintext
         ret.content_type, ret.version = p[TLSRecord].content_type, p[TLSRecord].version
         
-        plaintext = str(p[TLSRecord])
+        
+
+        plaintext = str(p[TLSRecord].payload)
         # calc MAC
         # MAC then ENCRYPT
-        seq = struct.pack("!II",0,0) # cli_hs,clientkeyexch,ccs
+        # TODO: FIXME seq is tracked in cryptobject, we do not handle > 32bit seq.
+        seq = cryptfunc.seq_encrypt
+        seq = struct.pack("!II",0,seq) # cli_hs,clientkeyexch,ccs
+        #print "SEQ",repr(seq)
         mac=''
         if macsecret:
             mac = self.tlsciphertext_mac(key=macsecret,
-                                         data=seq+plaintext)
+                                         data=seq+str(p[TLSRecord]))
 
-        print "---------------------------"
+        #print "---------------------------"
         # encrypt
 
         
-        print "len-plaintext:",len(plaintext), repr(plaintext)
-        print "MAC",repr(mac)
+        #print "len-plaintext:",len(plaintext), repr(plaintext)
+        #print "MAC",len(mac),repr(mac)
         
         ciphertext = cryptfunc.encrypt(plaintext+mac)
-        
-        #ciphertext+=ciphertext[-1]
-        #pad = struct.pack("!B",padlen)*padlen
+
         pcrypt=ret/TLSCiphertext(ciphertext)
         
+        #print self.tlsciphertext_decrypt(pcrypt, self.crypto.client.dec,macsecret=macsecret)
+        #exit()
+        #print "--ret"
+        pcrypt.show()
+        #print "ret--"
         #print repr(self.tlsciphertext_decrypt(pcrypt,self.crypto.client.dec,macsecret=macsecret))
         
-        print "---------------------------"
+        #print "---------------------------"
         return pcrypt
             
 
