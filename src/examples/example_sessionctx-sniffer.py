@@ -19,12 +19,12 @@ if __name__=="__main__":
     from ssl_tls import *
     import ssl_tls_crypto
     #------>
-    '''
+    
     #fetch interfaces
-    for i in get_if_list():
-        print i
-    conf.iface = "eth14"
-    '''
+    #for i in get_if_list():
+    #    print i
+    #conf.iface = "eth14"
+    
     
     ssl_session_map = {}
     
@@ -44,15 +44,21 @@ if __name__=="__main__":
                 #reset the session and print it next time
 
             for p in p[SSL].records:
-                print "processing..",repr(p[TLSRecord])
-                session.insert(p)            
-                if session.crypto.session.master_secret and session.printed==False:
-                    print repr(session)
-                    session.printed = True
-                
-                if p[TLSRecord].content_type==0x17:
-                    pp = session.tlsciphertext_decrypt(p,session.crypto.client.dec)
-                    pp.show()
+                try:
+                    print "processing..",repr(p[TLSRecord])
+                    session.insert(p)            
+                    if session.crypto.session.master_secret and session.printed==False:
+                        print repr(session)
+                        session.printed = True
+                    
+                    # try to decrypt packets that we were unable to dissect
+                    if p[TLSRecord].payload.name=="Raw" or (p.haslayer(TLSHandshake) and p[TLSHandshake].length > len(p[TLSHandshake].payload)):
+                    #if p[TLSRecord].content_type in (0x17,0x20) :
+                        pp = session.tlsciphertext_decrypt(p,session.crypto.client.dec, macsecret=session.crypto.session.key.client.mac)
+                        pp.show()
+                except Exception,e:
+                    print "error processing fragment: %s"%repr(e)
+                    
 
 
     print "* load servers privatekey for auto master-key decryption (RSA key only)"
@@ -86,6 +92,7 @@ xT0ToMPJUzWAn8pZv0snA0um6SIgvkCuxO84OkANCVbttzXImIsL7pFzfcwV/ERK
 UM6j0ZuSMFOCr/lGPAoOQU0fskidGEHi1/kW+suSr28TqsyYZpwBDQ==
 -----END RSA PRIVATE KEY-----
 """
+
     session = ssl_tls_crypto.TLSSessionCtx()
     session.rsa_load_privkey(privkey)
     session.printed=False
