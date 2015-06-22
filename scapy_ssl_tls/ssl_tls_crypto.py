@@ -399,6 +399,10 @@ class TLSSessionCtx(object):
                                                                "%s%s" % (MD5.new("".join(verify_data)).digest(), SHA.new("".join(verify_data)).digest()),
                                                                numbytes=12)
         return prf_verify_data
+    
+    def set_mode(self, client=None, server=None):
+        self.client=client if client else not server
+        self.server= not self.client
         
 class TLSPRF(object):
     TLS_MD_CLIENT_FINISH_CONST = "client finished"
